@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>POS Pro</title>
+
+<script src="https://unpkg.com/html5-qrcode"></script>
+
+<style>
+body { margin:0; font-family:system-ui; background:#f1f5f9; }
+
+/* HEADER */
+header {
+  padding:12px;
+  background:white;
+  display:flex;
+  justify-content:space-between;
+  box-shadow:0 2px 5px rgba(0,0,0,0.1);
+}
+
+/* SCANNER FIX */
+#scanner {
+  height:220px;
+  overflow:hidden;
+  background:black;
+}
+#scanner video {
+  width:100%!important;
+  height:100%!important;
+  object-fit:cover;
+}
+
+/* CART */
+.cart {
+  background:white;
+  border-radius:20px 20px 0 0;
+  margin-top:-20px;
+  padding:15px;
+  min-height:55vh;
+}
+
+.item {
+  background:#f8fafc;
+  padding:12px;
+  margin:8px 0;
+  border-radius:10px;
+}
+
+.row { display:flex; justify-content:space-between; }
+
+.qty { display:flex; gap:10px; margin-top:5px; }
+
+.checkout {
+  position:fixed;
+  bottom:0;
+  width:100%;
+  background:white;
+  padding:10px;
+  display:flex;
+  justify-content:space-between;
+}
+
+/* MODAL */
+.modal {
+  position:fixed;
+  inset:0;
+  display:none;
+  background:rgba(0,0,0,0.5);
+  justify-content:flex-end;
+}
+.sheet {
+  background:white;
+  width:100%;
+  padding:20px;
+  border-radius:20px 20px 0 0;
+}
+
+/* CHECKOUT */
+#checkoutPage { display:none; padding:15px; }
+.qr { text-align:center; margin-top:15px; }
+</style>
+</head>
+
+<body>
+
+<header>
+  <span>POS Billing</span>
+  <button onclick="resetCart()">Reset</button>
+</header>
+
+<div id="scanner"></div>
+
+<div class="cart" id="mainPage">
+  <div id="cartItems"></div>
+</div>
+
+<div class="checkout" id="checkoutBar">
+  <span id="total">₹0</span>
+  <button onclick="openCheckout()">Checkout</button>
+</div>
+
+<!-- MODAL -->
+<div id="modal" class="modal">
+  <div class="sheet">
+    <h3>Add Product</h3>
+    <input id="name" placeholder="Name"><br><br>
+    <input id="price" type="number" placeholder="Price"><br><br>
+    <select id="cat">
+      <option value="0">Food / Medicine (0%)</option>
+      <option value="5">Common Goods (5%)</option>
+      <option value="18">Electronics (18%)</option>
+      <option value="40">Luxury (40%)</option>
+    </select><br><br>
+    <button onclick="saveProduct()">Save</button>
+  </div>
+</div>
+
+<!-- CHECKOUT -->
+<div id="checkoutPage">
+  <h2>Checkout</h2>
+  <div id="bill"></div>
+
+  <select id="payment" onchange="showQR()">
+    <option value="cash">Cash</option>
+    <option value="upi">UPI</option>
+  </select>
+
+  <div id="qr" class="qr"></div>
+
+  <button onclick="completePayment()">Payment Done</button>
+  <button onclick="goBack()">⬅ Back</button>
+</div>
+
+<script>
+let cart = JSON.parse(localStorage.getItem("cart") || "[]");
+let products = JSON.parse(localStorage.getItem("products") || "{}");
+
+let scanner;
+let lastScan = 0;
+let scannedCode = null;
+
+const beep = new Audio("https://actions.google.com/sounds/v1/alarms/beep_short.ogg");
+
+/* INIT */
+window.onload = () => {
+  render();
+  startScanner();
+};
+
+/* SCANNER */
+async function startScanner(){
+  scanner = new Html5Qrcode("scanner");
+
+  await scanner.start(
+    { facingMode:"environment" },
+    { fps:10, qrbox:200 },
+    code => {
+
+      if(Date.now() - lastScan < 1000) return;
+      lastScan = Date.now();
+
+      beep.currentTime = 0;
+      beep.play();
+      if(navigator.vibrate) navigator.vibrate(50);
+
+      if(products[code]){
+        addToCart(products[code]);
+      } else {
+        scannedCode = code;
+        modal.style.display="flex";
+      }
+    }
+  );
+}
+
+/* CART */
+function addToCart(p){
+  let i = cart.find(x=>x.code===p.code);
+  if(i) i.qty++;
+  else cart.push({...p,qty:1});
+
+  saveCart();
+  render();
+}
+
+function changeQty(code,d){
+  let i = cart.find(x=>x.code===code);
+  if(!i) return;
+
+  i.qty += d;
+  if(i.qty<=0) cart = cart.filter(x=>x.code!==code);
+
+  saveCart();
+  render();
+}
+
+function render(){
+  let html="";
+  let total=0;
+
+  cart.forEach(i=>{
+    total += i.price*i.qty;
+
+    html += `
+      <div class="item">
+        <div class="row">
+          <span>${i.name}</span>
+          <span>₹${(i.price*i.qty).toFixed(2)}</span>
+        </div>
+
+        <div class="qty">
+          <button onclick="changeQty('${i.code}',-1)">-</button>
+          ${i.qty}
+          <button onclick="changeQty('${i.code}',1)">+</button>
+        </div>
+      </div>
+    `;
+  });
+
+  cartItems.innerHTML = html;
+  totalDiv.innerText = "₹"+total.toFixed(2);
+}
+
+function saveCart(){
+  localStorage.setItem("cart",JSON.stringify(cart));
+}
+
+/* ADD PRODUCT */
+function saveProduct(){
+  const nameVal = name.value.trim();
+  const priceVal = Number(price.value);
+  const gst = Number(cat.value);
+
+  if(!nameVal || isNaN(priceVal)){
+    alert("Invalid input");
+    return;
+  }
+
+  const p = {
+    code: scannedCode,
+    name: nameVal,
+    price: priceVal,
+    gst: gst
+  };
+
+  products[scannedCode]=p;
+  localStorage.setItem("products",JSON.stringify(products));
+
+  modal.style.display="none";
+  name.value="";
+  price.value="";
+
+  addToCart(p);
+}
+
+/* RESET */
+function resetCart(){
+  if(confirm("Clear cart?")){
+    cart=[];
+    saveCart();
+    render();
+  }
+}
+
+/* CHECKOUT */
+function openCheckout(){
+  mainPage.style.display="none";
+  checkoutBar.style.display="none";
+  checkoutPage.style.display="block";
+
+  let total=0, gstTotal=0, html="";
+
+  cart.forEach(i=>{
+    const price = i.price * i.qty;
+    const base = price / (1 + i.gst/100);
+    const gst = price - base;
+
+    total += price;
+    gstTotal += gst;
+
+    html += `
+      <div>
+        ${i.name} x ${i.qty} = ₹${price.toFixed(2)}<br>
+        <small>GST (${i.gst}%): ₹${gst.toFixed(2)}</small>
+      </div><br>
+    `;
+  });
+
+  html += `
+    <hr>
+    <b>Total: ₹${total.toFixed(2)}</b><br>
+    <b>GST: ₹${gstTotal.toFixed(2)}</b>
+  `;
+
+  bill.innerHTML = html;
+}
+
+/* BACK */
+function goBack(){
+  checkoutPage.style.display="none";
+  mainPage.style.display="block";
+  checkoutBar.style.display="flex";
+}
+
+/* UPI QR */
+function showQR(){
+  if(payment.value!=="upi"){ qr.innerHTML=""; return; }
+
+  let total=0;
+  cart.forEach(i=> total+=i.price*i.qty);
+
+  const upi=`upi://pay?pa=yourupi@bank&pn=Store&am=${total}&cu=INR`;
+
+  qr.innerHTML=`<img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(upi)}">`;
+}
+
+/* PAYMENT */
+function completePayment(){
+
+  let receipt="<h3>Receipt</h3>";
+  let total=0;
+
+  cart.forEach(i=>{
+    const line = `${i.name} x ${i.qty} = ₹${i.price*i.qty}`;
+    receipt += `<div>${line}</div>`;
+    total += i.price*i.qty;
+  });
+
+  receipt += `<hr>Total: ₹${total}`;
+
+  // PRINT (thermal printers via browser print)
+  const w = window.open("", "", "width=300,height=500");
+  w.document.write(receipt);
+  w.print();
+
+  // DOWNLOAD
+  const blob = new Blob([receipt], {type:"text/html"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "receipt.html";
+  a.click();
+
+  cart=[];
+  saveCart();
+  render();
+  goBack();
+}
+
+/* ELEMENTS */
+const cartItems=document.getElementById("cartItems");
+const totalDiv=document.getElementById("total");
+const modal=document.getElementById("modal");
+const mainPage=document.getElementById("mainPage");
+const checkoutPage=document.getElementById("checkoutPage");
+const checkoutBar=document.getElementById("checkoutBar");
+</script>
+
+</body>
+</html>
